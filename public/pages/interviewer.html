@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>设置面试时间 - 面试预约系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">面试预约系统</span>
+    <span class="subtitle">面试官设置空闲时间</span>
+  </div>
+
+  <div class="container-sm" id="main">
+    <div class="loading">加载中...</div>
+  </div>
+
+  <script>
+    const token = location.pathname.split('/').pop();
+    let interview = null;
+
+    async function load() {
+      try {
+        const res = await fetch(`/api/interviews/by-interviewer-token/${token}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        interview = data.data.interview;
+        render(data.data);
+      } catch (e) {
+        document.getElementById('main').innerHTML =
+          `<div class="card"><div class="alert alert-error">${e.message}</div></div>`;
+      }
+    }
+
+    function getNextWeekday() {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+      return d.toISOString().split('T')[0];
+    }
+
+    function render({ interview: iv, slots }) {
+      const alreadySet = slots.length > 0;
+      document.getElementById('main').innerHTML = `
+        <div class="page-header">
+          <h1>您好，${iv.interviewer_name}</h1>
+          <p>请为「${iv.position}」面试设置您方便的时间段</p>
+        </div>
+
+        <div class="card">
+          <div style="font-size:13px;color:#444;line-height:1.8;margin-bottom:16px;">
+            <strong>面试说明：</strong>${iv.title}<br>
+            <strong>职位：</strong>${iv.position}<br>
+            ${iv.notes ? `<strong>备注：</strong>${iv.notes}<br>` : ''}
+          </div>
+
+          ${alreadySet ? `
+            <div class="alert alert-info" style="margin-bottom:16px;">
+              您已设置过时间段（${slots.length}个）。可以重新设置，提交后原有未被预约的时间段将被替换。
+            </div>
+          ` : ''}
+
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <div style="font-size:14px;font-weight:500;">添加可用时间段</div>
+            <button class="btn btn-outline btn-sm" onclick="addSlot()">+ 添加时间段</button>
+          </div>
+
+          <div class="tip" style="margin-bottom:12px;">
+            请添加至少 2-3 个时间段，方便候选人选择。时间段先到先得，多人可同时预约不同时间。
+          </div>
+
+          <div id="slot-rows"></div>
+          <div id="slot-error" style="margin-top:8px;"></div>
+
+          <div style="margin-top:20px;">
+            <button class="btn btn-primary" onclick="submit()">确认提交时间段</button>
+          </div>
+        </div>
+
+        <div id="result"></div>
+      `;
+
+      if (alreadySet) {
+        slots.forEach(s => addSlotWithValues(s.date, s.start_time, s.end_time));
+      } else {
+        addSlot();
+        addSlot();
+      }
+    }
+
+    let slotCount = 0;
+
+    function addSlot() { addSlotWithValues(getNextWeekday(), '10:00', '11:00'); }
+
+    function addSlotWithValues(date, startTime, endTime) {
+      slotCount++;
+      const id = `slot-${slotCount}`;
+      const row = document.createElement('div');
+      row.className = 'slot-input-row';
+      row.id = id;
+      row.innerHTML = `
+        <div class="form-group" style="margin:0;">
+          <label>日期</label>
+          <input type="date" class="slot-date" value="${date}" min="${new Date().toISOString().split('T')[0]}">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label>开始时间</label>
+          <input type="time" class="slot-start" value="${startTime}">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label>结束时间</label>
+          <input type="time" class="slot-end" value="${endTime}">
+        </div>
+        <div style="padding-bottom:2px;">
+          <button class="btn btn-danger btn-sm" onclick="removeSlot('${id}')" style="height:36px;">删除</button>
+        </div>
+      `;
+      document.getElementById('slot-rows').appendChild(row);
+    }
+
+    function removeSlot(id) {
+      const rows = document.querySelectorAll('#slot-rows .slot-input-row');
+      if (rows.length <= 1) {
+        document.getElementById('slot-error').innerHTML = '<div class="alert alert-error">至少保留一个时间段</div>';
+        return;
+      }
+      document.getElementById(id).remove();
+      document.getElementById('slot-error').innerHTML = '';
+    }
+
+    async function submit() {
+      document.getElementById('slot-error').innerHTML = '';
+      const rows = document.querySelectorAll('#slot-rows .slot-input-row');
+      const slots = [];
+      for (const row of rows) {
+        const date = row.querySelector('.slot-date').value;
+        const start_time = row.querySelector('.slot-start').value;
+        const end_time = row.querySelector('.slot-end').value;
+        if (!date || !start_time || !end_time) {
+          document.getElementById('slot-error').innerHTML = '<div class="alert alert-error">请填写所有时间段的完整信息</div>';
+          return;
+        }
+        if (start_time >= end_time) {
+          document.getElementById('slot-error').innerHTML = '<div class="alert alert-error">结束时间必须晚于开始时间</div>';
+          return;
+        }
+        slots.push({ date, start_time, end_time });
+      }
+      try {
+        const res = await fetch(`/api/slots/interviewer/${token}`, {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ slots })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        document.getElementById('result').innerHTML = `
+          <div class="card" style="margin-top:16px;border-color:#97C459;">
+            <div style="color:#3B6D11;font-size:15px;font-weight:500;margin-bottom:8px;">时间段已成功提交！</div>
+            <p style="font-size:13px;color:#444;line-height:1.7;">
+              您已设置 <strong>${slots.length}</strong> 个可用时间段。<br>
+              HR 将发送预约链接给候选人，候选人选择时间后您将收到确认邮件。<br>
+              多个候选人可分别选择不同时间段，先到先得。
+            </p>
+          </div>`;
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      } catch (e) {
+        document.getElementById('slot-error').innerHTML = `<div class="alert alert-error">提交失败：${e.message}</div>`;
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>
