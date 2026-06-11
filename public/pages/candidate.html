@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>选择面试时间 - 面试预约系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">面试预约系统</span>
+    <span class="subtitle">候选人预约时间</span>
+  </div>
+
+  <div class="container-sm" id="main">
+    <div class="loading">加载中...</div>
+  </div>
+
+  <script>
+    const token = location.pathname.split('/').pop();
+    let selectedSlotId = null;
+    let interview = null;
+
+    const WEEK = ['周日','周一','周二','周三','周四','周五','周六'];
+
+    function formatDate(dateStr) {
+      const d = new Date(dateStr + 'T00:00:00');
+      return `${d.getMonth()+1}月${d.getDate()}日 ${WEEK[d.getDay()]}`;
+    }
+
+    async function load() {
+      try {
+        const res = await fetch(`/api/interviews/by-candidate-token/${token}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        interview = data.data.interview;
+
+        if (interview.status === 'pending_interviewer') {
+          document.getElementById('main').innerHTML = `
+            <div class="card">
+              <div class="alert alert-info" style="margin-bottom:0;">
+                面试官正在设置可用时间，请稍后再访问此链接。
+              </div>
+            </div>`;
+          return;
+        }
+        render(data.data);
+      } catch (e) {
+        document.getElementById('main').innerHTML =
+          `<div class="card"><div class="alert alert-error">${e.message}</div></div>`;
+      }
+    }
+
+    function render({ interview: iv, slots }) {
+      const availableSlots = slots.filter(s => !s.is_booked);
+      const bookedSlots = slots.filter(s => s.is_booked);
+
+      if (availableSlots.length === 0 && bookedSlots.length > 0) {
+        document.getElementById('main').innerHTML = `
+          <div class="card" style="text-align:center;padding:32px;">
+            <div style="font-size:48px;margin-bottom:16px;">😔</div>
+            <div style="font-size:16px;font-weight:500;color:#633806;margin-bottom:8px;">所有时间段已被预约</div>
+            <p style="font-size:13px;color:#888780;line-height:1.7;">
+              面试官提供的 ${bookedSlots.length} 个时间段已全部被其他候选人选择。<br>
+              请联系 HR 协调其他时间。
+            </p>
+          </div>`;
+        return;
+      }
+
+      document.getElementById('main').innerHTML = `
+        <div class="page-header">
+          <h1>选择面试时间</h1>
+          <p>请选择您方便的时间段完成预约</p>
+        </div>
+
+        <div class="card" style="margin-bottom:16px;">
+          <div style="font-size:13px;color:#444;line-height:1.8;">
+            <strong>职位：</strong>${iv.position}<br>
+            <strong>面试官：</strong>${iv.interviewer_name}<br>
+            ${iv.notes ? `<strong>说明：</strong>${iv.notes}` : ''}
+          </div>
+        </div>
+
+        <div class="tip" style="margin-bottom:16px;">
+          <strong>注意</strong>：时间段先到先得，已被他人选择的时间段不可再选。请尽快选择您方便的时间。
+        </div>
+
+        <div class="card">
+          <div style="font-size:14px;font-weight:500;margin-bottom:4px;">可选时间段</div>
+          <div style="font-size:12px;color:#888780;margin-bottom:14px;">
+            共 ${availableSlots.length} 个可用时间段
+          </div>
+
+          <div class="slot-grid" id="slot-grid">
+            ${availableSlots.map(s => `
+              <div class="slot-card" id="sc-${s.id}" onclick="selectSlot('${s.id}')">
+                <div class="slot-date">${formatDate(s.date)}</div>
+                <div class="slot-time">${s.start_time} – ${s.end_time}</div>
+                <div class="check-icon">✓</div>
+              </div>
+            `).join('')}
+          </div>
+
+          ${bookedSlots.length ? `
+            <div style="margin-top:16px;font-size:12px;color:#888780;">
+              已被预约：${bookedSlots.map(s => `${s.date} ${s.start_time}-${s.end_time}`).join('、')}
+            </div>
+          ` : ''}
+
+          <div id="slot-error" style="margin-top:12px;"></div>
+
+          <hr class="divider">
+
+          <div class="form-group">
+            <label>您的姓名 <span class="required">*</span></label>
+            <input type="text" id="candidate-name" placeholder="请填写您的姓名">
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label>您的邮箱 <span class="required">*</span></label>
+              <input type="email" id="candidate-email" placeholder="用于接收确认邮件">
+            </div>
+            <div class="form-group">
+              <label>手机号（可选）</label>
+              <input type="tel" id="candidate-phone" placeholder="方便联系">
+            </div>
+          </div>
+
+          <button class="btn btn-success" style="width:100%;font-size:15px;padding:10px;" onclick="confirm()">
+            确认预约
+          </button>
+        </div>
+      `;
+    }
+
+    function selectSlot(id) {
+      document.querySelectorAll('.slot-card').forEach(el => el.classList.remove('selected'));
+      document.getElementById(`sc-${id}`).classList.add('selected');
+      selectedSlotId = id;
+      document.getElementById('slot-error').innerHTML = '';
+    }
+
+    async function confirm() {
+      if (!selectedSlotId) {
+        document.getElementById('slot-error').innerHTML = '<div class="alert alert-error">请先选择一个时间段</div>';
+        return;
+      }
+      const name = document.getElementById('candidate-name').value.trim();
+      const email = document.getElementById('candidate-email').value.trim();
+      const phone = document.getElementById('candidate-phone').value.trim();
+
+      if (!name || !email) {
+        document.getElementById('slot-error').innerHTML = '<div class="alert alert-error">请填写姓名和邮箱</div>';
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/slots/candidate/${token}`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ slot_id: selectedSlotId, candidate_name: name, candidate_email: email, candidate_phone: phone || undefined })
+        });
+        const data = await res.json();
+        if (!data.success) {
+          if (data.error.includes('已被')) {
+            document.getElementById('slot-error').innerHTML =
+              `<div class="alert alert-error">${data.error}<br>请刷新页面重新选择。</div>`;
+          } else {
+            document.getElementById('slot-error').innerHTML =
+              `<div class="alert alert-error">${data.error}</div>`;
+          }
+          return;
+        }
+
+        // 尝试发送确认邮件
+        try { await fetch(`/api/email/send-booking-confirmation/${data.data.booking.id}`, { method: 'POST' }); } catch(e) {}
+
+        const { slot } = data.data;
+        renderSuccess(slot, name);
+      } catch (e) {
+        document.getElementById('slot-error').innerHTML = `<div class="alert alert-error">预约失败：${e.message}</div>`;
+      }
+    }
+
+    function renderSuccess(slot, name) {
+      const timeStr = `${formatDate(slot.date)} ${slot.start_time}–${slot.end_time}`;
+      document.getElementById('main').innerHTML = `
+        <div class="page-header">
+          <h1>预约成功！</h1>
+          <p>您的面试时间已确认</p>
+        </div>
+
+        <div class="card" style="text-align:center;padding:32px 24px;">
+          <div style="font-size:48px;margin-bottom:16px;">🎉</div>
+          <div style="font-size:20px;font-weight:500;color:#085041;margin-bottom:8px;">${timeStr}</div>
+          <div style="font-size:13px;color:#444;line-height:1.8;margin-top:16px;">
+            您好，${name}<br>
+            面试职位：${interview.position}<br>
+            面试官：${interview.interviewer_name}<br>
+          </div>
+          <div class="alert alert-success" style="margin-top:20px;text-align:left;">
+            确认通知已发送至您的邮箱（如已配置邮件服务）。<br>
+            请注意查收并准时参加面试，祝您面试顺利！
+          </div>
+        </div>
+      `;
+    }
+
+    load();
+  </script>
+</body>
+</html>
