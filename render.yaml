@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: interview-scheduler
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: SMTP_USER
+        fromGroup: smtp-creds
+      - key: SMTP_PASS
+        fromGroup: smtp-creds
+      - key: SMTP_HOST
+        fromGroup: smtp-creds
+      - key: SMTP_PORT
+        fromGroup: smtp-creds
+      - key: SMTP_SECURE
+        fromGroup: smtp-creds
