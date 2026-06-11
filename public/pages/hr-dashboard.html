@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>面试预约系统 - HR 管理后台</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <span class="brand">面试预约系统</span>
+    <span class="subtitle">HR 管理后台</span>
+  </div>
+
+  <div class="container">
+    <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <h1>面试管理</h1>
+        <p>创建和追踪所有面试预约</p>
+      </div>
+      <button class="btn btn-primary" onclick="openCreateModal()">+ 新建面试邀请</button>
+    </div>
+
+    <div id="emailConfigTip" class="tip" style="margin-bottom:16px;">
+      <strong>使用说明</strong>：创建面试后，将「面试官设时间链接」发给面试官；面试官设好后，将「候选人预约链接」发给候选人（支持群发同一链接，先到先得）。配置 SMTP 后可自动发邮件，否则手动复制链接即可。
+    </div>
+
+    <div class="grid-3" style="margin-bottom:20px;">
+      <div class="card" style="text-align:center;padding:16px;">
+        <div style="font-size:24px;font-weight:500;color:#534AB7;" id="stat-total">0</div>
+        <div style="font-size:12px;color:#888780;margin-top:4px;">全部面试</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px;">
+        <div style="font-size:24px;font-weight:500;color:#185FA5;" id="stat-pending">0</div>
+        <div style="font-size:12px;color:#888780;margin-top:4px;">进行中</div>
+      </div>
+      <div class="card" style="text-align:center;padding:16px;">
+        <div style="font-size:24px;font-weight:500;color:#0F6E56;" id="stat-confirmed">0</div>
+        <div style="font-size:12px;color:#888780;margin-top:4px;">已预约</div>
+      </div>
+    </div>
+
+    <div id="interview-list">
+      <div class="loading">加载中...</div>
+    </div>
+  </div>
+
+  <!-- 新建面试弹窗 -->
+  <div class="modal-backdrop" id="createModal" style="display:none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>新建面试邀请</h3>
+        <button class="btn-close" onclick="closeModal('createModal')">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="grid-2">
+          <div class="form-group">
+            <label>邀请标题 <span class="required">*</span></label>
+            <input type="text" id="f-title" placeholder="如：2026春招-前端工程师">
+          </div>
+          <div class="form-group">
+            <label>应聘职位 <span class="required">*</span></label>
+            <input type="text" id="f-position" placeholder="如：前端开发工程师">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="form-group">
+            <label>面试官姓名 <span class="required">*</span></label>
+            <input type="text" id="f-interviewer-name" placeholder="如：张三">
+          </div>
+          <div class="form-group">
+            <label>面试官邮箱 <span class="required">*</span></label>
+            <input type="email" id="f-interviewer-email" placeholder="interviewer@company.com">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>备注说明</label>
+          <textarea id="f-notes" placeholder="面试轮次、要求等补充说明（可选）" rows="2"></textarea>
+        </div>
+        <div class="tip">
+          创建后系统会生成两个链接：一个给面试官设置空闲时间，一个给候选人选择时间。同一个候选人链接可以发给多人，先到先得。
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal('createModal')">取消</button>
+        <button class="btn btn-primary" onclick="createInterview()">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 详情/操作弹窗 -->
+  <div class="modal-backdrop" id="detailModal" style="display:none;" onclick="if(event.target===this)closeModal('detailModal')">
+    <div class="modal" style="max-width:680px;">
+      <div class="modal-header">
+        <h3 id="detail-title">面试详情</h3>
+        <button class="btn-close" onclick="closeModal('detailModal')">×</button>
+      </div>
+      <div class="modal-body" id="detail-content"></div>
+    </div>
+  </div>
+
+  <script>
+    let interviews = [];
+
+    async function loadInterviews() {
+      try {
+        const res = await fetch('/api/interviews');
+        const data = await res.json();
+        interviews = data.data || [];
+        renderList();
+        updateStats();
+      } catch (e) {
+        document.getElementById('interview-list').innerHTML =
+          '<div class="alert alert-error">加载失败，请确认服务器已启动</div>';
+      }
+    }
+
+    function updateStats() {
+      document.getElementById('stat-total').textContent = interviews.length;
+      document.getElementById('stat-pending').textContent =
+        interviews.filter(i => i.status !== 'has_bookings').length;
+      document.getElementById('stat-confirmed').textContent =
+        interviews.reduce((s, i) => s + (i.booking_count || 0), 0);
+    }
+
+    function statusBadge(status) {
+      const map = {
+        'pending_interviewer': ['badge-pending', '等待面试官设时间'],
+        'pending_candidate': ['badge-waiting', '等待候选人预约'],
+        'has_bookings': ['badge-confirmed', '已有预约']
+      };
+      const [cls, label] = map[status] || ['badge-pending', status];
+      return `<span class="badge ${cls}"><span class="badge-dot"></span>${label}</span>`;
+    }
+
+    function renderList() {
+      const el = document.getElementById('interview-list');
+      if (!interviews.length) {
+        el.innerHTML = `<div class="empty-state">
+          <div class="empty-icon">📋</div>
+          <p>暂无面试记录<br>点击右上角「新建面试邀请」开始</p>
+        </div>`;
+        return;
+      }
+      el.innerHTML = interviews.map(i => `
+        <div class="interview-item">
+          <div class="interview-info">
+            <div class="interview-title">${i.title}</div>
+            <div class="interview-meta">
+              ${i.position} · 面试官：${i.interviewer_name} ·
+              ${i.slot_count || 0} 个时间段 ·
+              <strong style="color:#0F6E56">${i.booking_count || 0} 人已预约</strong>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;">
+            ${statusBadge(i.status)}
+            <div class="interview-actions">
+              <button class="btn btn-outline btn-sm" onclick="showDetail('${i.id}')">管理</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteInterview('${i.id}', '${i.title}')">删除</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function openCreateModal() {
+      ['f-title','f-position','f-interviewer-name','f-interviewer-email','f-notes'].forEach(id => {
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('createModal').style.display = 'flex';
+    }
+
+    function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+
+    async function createInterview() {
+      const body = {
+        title: document.getElementById('f-title').value.trim(),
+        position: document.getElementById('f-position').value.trim(),
+        interviewer_name: document.getElementById('f-interviewer-name').value.trim(),
+        interviewer_email: document.getElementById('f-interviewer-email').value.trim(),
+        notes: document.getElementById('f-notes').value.trim()
+      };
+      if (!body.title || !body.position || !body.interviewer_name || !body.interviewer_email) {
+        alert('请填写所有必填字段'); return;
+      }
+      try {
+        const res = await fetch('/api/interviews', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        closeModal('createModal');
+        await loadInterviews();
+        showDetail(data.data.id);
+      } catch (e) { alert('创建失败: ' + e.message); }
+    }
+
+    async function showDetail(id) {
+      try {
+        const res = await fetch(`/api/interviews/${id}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        const { interview: iv, slots, bookings } = data.data;
+        const baseUrl = window.location.origin;
+        const interviewerLink = `${baseUrl}/interviewer/${iv.interviewer_token}`;
+        const candidateLink = `${baseUrl}/schedule/${iv.candidate_token}`;
+
+        // 时间段表格
+        let slotsHtml = '';
+        if (slots.length) {
+          slotsHtml = `
+            <div style="margin-top:16px;">
+              <div style="font-size:13px;font-weight:500;margin-bottom:8px;">可用时间段（${slots.length}个）</div>
+              <div style="border:0.5px solid rgba(44,44,42,0.12);border-radius:8px;overflow:hidden;">
+                ${slots.map(s => `
+                  <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:0.5px solid rgba(44,44,42,0.06);font-size:13px;">
+                    <span>${s.date} ${s.start_time}–${s.end_time}</span>
+                    ${s.is_booked ?
+                      `<span style="color:#085041;font-size:12px;">已预约：${s.booked_by}（${s.booked_email}）</span>` :
+                      `<span style="color:#888780;font-size:12px;">空闲</span>`
+                    }
+                  </div>
+                `).join('')}
+              </div>
+            </div>`;
+        }
+
+        // 候选人预约列表
+        let bookingsHtml = '';
+        if (bookings.length) {
+          bookingsHtml = `
+            <div style="margin-top:16px;">
+              <div style="font-size:13px;font-weight:500;margin-bottom:8px;">已预约候选人（${bookings.length}人）</div>
+              <div style="border:0.5px solid rgba(44,44,42,0.12);border-radius:8px;overflow:hidden;">
+                ${bookings.map(b => {
+                  const slot = slots.find(s => s.id === b.slot_id);
+                  return `
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:0.5px solid rgba(44,44,42,0.06);font-size:13px;">
+                      <div>
+                        <strong>${b.candidate_name}</strong>
+                        <span style="color:#888780;margin-left:8px;">${b.candidate_email}</span>
+                        ${b.candidate_phone ? `<span style="color:#888780;margin-left:8px;">${b.candidate_phone}</span>` : ''}
+                      </div>
+                      <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="color:#0F6E56;font-size:12px;">${slot ? slot.date + ' ' + slot.start_time + '-' + slot.end_time : ''}</span>
+                        <button class="btn btn-danger btn-sm" onclick="cancelBooking('${b.id}', '${id}')" style="font-size:11px;padding:2px 8px;">取消</button>
+                      </div>
+                    </div>`;
+                }).join('')}
+              </div>
+            </div>`;
+        }
+
+        document.getElementById('detail-title').textContent = iv.title;
+        document.getElementById('detail-content').innerHTML = `
+          <div style="margin-bottom:16px;">
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+              ${statusBadge(iv.status)}
+              <span style="font-size:12px;color:#888780;">${iv.position}</span>
+            </div>
+            <div style="font-size:13px;color:#444;line-height:1.8;">
+              <div>面试官：${iv.interviewer_name}（${iv.interviewer_email}）</div>
+              ${iv.notes ? `<div>备注：${iv.notes}</div>` : ''}
+            </div>
+          </div>
+
+          ${slotsHtml}
+          ${bookingsHtml}
+
+          <hr class="divider">
+
+          <div style="margin-bottom:16px;">
+            <div style="font-size:13px;font-weight:500;margin-bottom:6px;">面试官设时间链接</div>
+            <div class="link-box">
+              <span class="link-text" id="link-interviewer">${interviewerLink}</span>
+              <button class="btn btn-outline btn-sm" onclick="copyText('link-interviewer')">复制</button>
+            </div>
+            <div style="margin-top:6px;">
+              <button class="btn btn-outline btn-sm" onclick="sendEmail('interviewer', '${iv.id}')">发邮件给面试官</button>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:13px;font-weight:500;margin-bottom:6px;">候选人预约链接 <span style="color:#0F6E56;font-weight:400;">（多人共用，先到先得）</span></div>
+            <div class="link-box">
+              <span class="link-text" id="link-candidate">${candidateLink}</span>
+              <button class="btn btn-outline btn-sm" onclick="copyText('link-candidate')">复制</button>
+            </div>
+            <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <button class="btn btn-outline btn-sm"
+                ${iv.status === 'pending_interviewer' ? 'disabled title="面试官尚未设置时间"' : ''}
+                onclick="openBatchEmailModal('${iv.id}')">群发邮件给候选人</button>
+              ${iv.status === 'pending_interviewer' ? '<span style="font-size:11px;color:#888780;">等面试官设置时间后可发送</span>' : ''}
+            </div>
+          </div>
+
+          <div id="email-result" style="margin-top:12px;"></div>
+        `;
+        document.getElementById('detailModal').style.display = 'flex';
+      } catch (e) { alert('加载失败: ' + e.message); }
+    }
+
+    async function sendEmail(type, interviewId) {
+      const resultEl = document.getElementById('email-result');
+      resultEl.innerHTML = '<div class="alert alert-info">发送中...</div>';
+      try {
+        const endpoint = type === 'interviewer'
+          ? `/api/email/send-interviewer/${interviewId}`
+          : `/api/email/send-candidate-link/${interviewId}`;
+        const res = await fetch(endpoint, { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        resultEl.innerHTML = `<div class="alert alert-success">${data.message}</div>`;
+      } catch (e) {
+        resultEl.innerHTML = `<div class="alert alert-error">发送失败：${e.message}（请检查 SMTP 配置，或手动复制链接）</div>`;
+      }
+    }
+
+    // 群发邮件弹窗
+    let batchInterviewId = '';
+    function openBatchEmailModal(interviewId) {
+      batchInterviewId = interviewId;
+      document.getElementById('batch-emails').value = '';
+      document.getElementById('batch-result').innerHTML = '';
+      document.getElementById('batchEmailModal').style.display = 'flex';
+    }
+
+    async function sendBatchEmails() {
+      const raw = document.getElementById('batch-emails').value.trim();
+      if (!raw) { alert('请填写至少一个候选人邮箱'); return; }
+
+      // 解析输入：每行一个，支持多种格式
+      const lines = raw.split('\n').map(l => l.trim()).filter(l => l);
+      const recipients = [];
+      for (const line of lines) {
+        // 格式：姓名<邮箱>
+        const match1 = line.match(/(.+?)\s*<(.+?)>/);
+        if (match1) {
+          recipients.push({ name: match1[1].trim(), email: match1[2].trim() });
+          continue;
+        }
+        // 格式：邮箱 姓名 或纯邮箱
+        const parts = line.split(/[\s,，]+/);
+        const emailPart = parts.find(p => p.includes('@'));
+        if (emailPart) {
+          const namePart = parts.filter(p => p !== emailPart).join(' ');
+          recipients.push({ name: namePart, email: emailPart });
+          continue;
+        }
+      }
+
+      if (!recipients.length) { alert('未识别到有效邮箱，请检查格式'); return; }
+
+      const resultEl = document.getElementById('batch-result');
+      resultEl.innerHTML = `<div class="alert alert-info">正在发送 ${recipients.length} 封邮件...</div>`;
+
+      try {
+        const res = await fetch(`/api/email/send-candidate-link/${batchInterviewId}`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ recipients })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+
+        const r = data.results;
+        let html = `<div class="alert alert-success">✅ 成功发送 ${r.success.length} 封邮件</div>`;
+        if (r.failed.length) {
+          html += `<div class="alert alert-error">❌ ${r.failed.length} 封发送失败：<br>`;
+          html += r.failed.map(f => `${f.email}: ${f.error}`).join('<br>');
+          html += '</div>';
+        }
+        resultEl.innerHTML = html;
+      } catch (e) {
+        resultEl.innerHTML = `<div class="alert alert-error">发送失败：${e.message}</div>`;
+      }
+    }
+
+    function copyText(id) {
+      const text = document.getElementById(id).textContent;
+      navigator.clipboard.writeText(text).then(() => alert('链接已复制到剪贴板'));
+    }
+
+    async function cancelBooking(bookingId, interviewId) {
+      if (!confirm('确定取消该候选人的预约吗？取消后该时间段将释放给其他候选人。')) return;
+      try {
+        const res = await fetch(`/api/slots/booking/${bookingId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        showDetail(interviewId);
+        loadInterviews();
+      } catch (e) { alert('取消失败: ' + e.message); }
+    }
+
+    async function deleteInterview(id, title) {
+      if (!confirm(`确定删除「${title}」吗？此操作不可撤销。`)) return;
+      try {
+        const res = await fetch(`/api/interviews/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        await loadInterviews();
+      } catch (e) { alert('删除失败: ' + e.message); }
+    }
+
+    loadInterviews();
+    setInterval(loadInterviews, 15000);
+  </script>
+
+  <!-- 群发邮件弹窗 -->
+  <div class="modal-backdrop" id="batchEmailModal" style="display:none;" onclick="if(event.target===this)closeModal('batchEmailModal')">
+    <div class="modal" style="max-width:560px;">
+      <div class="modal-header">
+        <h3>群发邮件给候选人</h3>
+        <button class="btn-close" onclick="closeModal('batchEmailModal')">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>候选人邮箱 <span class="required">*</span></label>
+          <textarea id="batch-emails" rows="8" placeholder="每行填写一个候选人，支持以下格式：
+
+1. 纯邮箱：zhangsan@example.com
+2. 邮箱+姓名：zhangsan@example.com 张三
+3. 姓名&lt;邮箱&gt;：张三&lt;zhangsan@example.com&gt;
+
+示例：
+zhangsan@example.com 张三
+lisi@example.com 李四
+王五<wangwu@example.com>"></textarea>
+        </div>
+        <div class="tip">
+          每个候选人将收到一封包含预约链接的邮件，点击即可选择面试时间。同一链接多人共用，先到先得。
+        </div>
+        <div id="batch-result" style="margin-top:12px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal('batchEmailModal')">取消</button>
+        <button class="btn btn-primary" onclick="sendBatchEmails()">发送</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
